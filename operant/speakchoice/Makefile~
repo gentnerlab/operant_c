@@ -1,0 +1,6 @@
+all:
+	gcc -Wall speakchoice.c -lsndfile -lasound -lcomedi -o spkchoice
+
+clean:
+	rm -rf *.o spkchoice
+

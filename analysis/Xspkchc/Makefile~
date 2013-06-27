@@ -1,0 +1,6 @@
+all:
+	gcc -Wall Xspkchcholdtrn.c -o Xspkchcholdtrn
+
+clean:
+	rm -rf *.o Xspkchcholdtrn
+

@@ -1,0 +1,6 @@
+all:
+	gcc -Wall songchoicetrain.c -lsndfile -lasound -lcomedi -o songchoicetrain
+
+clean:
+	rm -rf *.o songchoicetrain
+

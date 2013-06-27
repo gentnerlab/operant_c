@@ -1,0 +1,6 @@
+all:
+	gcc -Wall Xfemxperch.c -o Xfemxperch
+
+clean:
+	rm -rf *.o Xfemxperch
+

@@ -1,0 +1,839 @@
+/****************************************************************************
+ **    X3ac.c -- use to analyse data from any 3ac operant routine 
+ *****************************************************************************
+ **
+ **  12/16/99  TQG  handles initial parsing and analysis of the data files 
+ **                 output from 2chioce_bsl and 2choice_flash anf 2choice_bsl+tone.  
+ **                 (1) Blocks the data by a specified block size, and for each block provides 
+ **                 the number of correct, incorrect and no-responses for 
+ **                 each stimulus class, or exemplar  
+ **
+ **            Note: This version does NOT include non-responses or correction trials
+ **                   in the derived performace values for each block.  However,             
+ **                   it counts both correction and non-correction trials toward the 
+ **                   trials per block number.             
+ **
+ **  1-27-01  TQG  added '-p' flag which will create an output file that gnuplot can read
+ **  
+ **
+ **  2-01-01 TQG  Now handles data files containing more than 2 stimulus classes
+ **  4-19-01 TQG  Now parses by stimulus class or exemplar 
+ **  5-01-01 TQG  added command line flag to control counting the last block
+ **
+ **  3-14-01 TQG added '-x' flag which will cause only reinforced non-correction trials to
+ **                 add to the cumulative trials/block.  i.e. a block of 50 trials, contains 
+ **                 50 non-correction trials, nothing else.  The default (w/o -x is to count the
+ **                 correction trials towards the trials/block, but not in performance on the block.    
+ **
+ **  5-27-07 EC & TQG modified X2ac to X3ac
+ */
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <math.h>
+
+#define DEBUG 0
+
+#define BLOCK_SIZE  100                  /* default number of trials per block */
+#define PLOT_OUTPUT  0                   /* default '0' for no gnuplot output */
+#define NMAXSTIMS    4096                /* default max number of stimulus classes or exemplars*/
+#define LAST_BLOCK 0                     /* default '0' , don't count the trials in the last (incomplete) block */
+#define CORRECTION 0                     /* default '0', don't count data from correction trials */
+
+int blocksize = BLOCK_SIZE;
+int plot_out = PLOT_OUTPUT;
+int lastblock = LAST_BLOCK;
+int subjectid = 0;
+int correction = CORRECTION;
+
+int main (int ac, char *av[])
+{
+  float pC[NMAXSTIMS];
+  int sess_num, trl_num, trl_type, stim_class, block_num, freq, Rrate, Prate;
+  int resp_sel, resp_acc, resp_tod, resp_date, bystim=0, nstims, cx_src=0, stim_group;
+  int trial_cnt, reinf_val, i, j, class, n_stimclass, ngroups, cnt_cx=1, bycue=0, bysplT=0,byclass=0;
+  int printstimcount=0, cue_group, class_group, spl_group, outtype=0,group = 0, classtest, ncues;
+  int ncue_cond = 3, nspl_bins=7, high_bin, low_bin, test;
+  float splT;
+  float out_minDB = 45.0;
+  float out_maxDB = 81.0;
+  int binsize = 6;
+  float resp_rt;
+  FILE *outfp = NULL, *infp = NULL, *plotfp = NULL, *stimfp = NULL;
+  char *stimfname = NULL;
+  char infilename[128], outfname[128], plotfname[128], line[256], exemplar[64], cue[64];
+  char stimfline[256], stimf[64], stimfroot [128], cuef[64], qname[64];
+
+  struct stim {
+    char exem[128];
+    char qname[128];
+    int class;
+  }stimlist[NMAXSTIMS];
+  
+  struct stimdat{
+    int C;
+    int X;
+    int X1;
+    int X2;
+    int X3;
+    int Xvc;
+    int Xic;
+    int N;
+    int cC;
+    int cX;
+    int cX1;
+    int cX2;
+    int cX3;
+    int cXvc;
+    int cXic;
+    int cN;
+    float C_RT;
+    float X_RT;
+    float X1_RT;
+    float X2_RT;
+    float X3_RT;
+    float Xvc_RT;
+    float Xic_RT;
+    float cC_RT;
+    float cX_RT;
+    float cX1_RT;
+    float cX2_RT;
+    float cX3_RT;    
+    float cXvc_RT;
+    float cXic_RT;
+  }Rblock[NMAXSTIMS],Rtot[NMAXSTIMS];
+  
+  /* Parse the command line */
+  for (i = 1; i < ac; i++){
+    if (*av[i] == '-'){
+      if (strncmp(av[i], "-S", 2) == 0)
+	sscanf(av[++i], "%d", &subjectid);
+      else if (strncmp(av[i], "-b", 2) == 0)
+	sscanf(av[++i], "%d", &blocksize); 
+      else if (strncmp(av[i], "-p", 2) == 0){
+	plot_out = 1;
+	fprintf(stderr, "\nGenerating output file for gnuplot\n");
+      }
+      else if (strncmp(av[i], "-c", 2) == 0)
+	lastblock = 1; 
+      else if (strncmp(av[i], "-v", 2) == 0)
+	printstimcount = 1; 
+      else if (strncmp(av[i], "-x", 2) == 0){
+	cnt_cx = 0;  
+	fprintf(stderr, "Not counting correction trials toward block totals\n");
+      }
+      else if (strncmp(av[i], "-m", 2) == 0){
+	bystim = 1;
+	fprintf(stderr, "Sorting by stimulus exemplar\n");
+      }
+      else if (strncmp(av[i], "-s", 2) == 0){
+	bysplT = 1;
+	fprintf(stderr, "Sorting by target spl bin\n");
+      }
+      else if (strncmp(av[i], "-l", 2) == 0){
+	byclass = 1;
+	fprintf(stderr, "Sorting by stimulus class\n");
+      }
+      else if (strncmp(av[i], "-i", 2) == 0){
+	bycue = 1;
+	fprintf(stderr, "Sorting by cue validity\n");
+      }
+      else if (strncmp(av[i], "-h", 2) == 0){
+	fprintf(stderr, "X3ac usage:\n");
+	fprintf(stderr, "    X3ac [-hpcxvmsli] [-b int] [-S int] <filename>\n\n");
+	fprintf(stderr, "     -h          = show this help message\n");
+	fprintf(stderr, "     -b int      = specify trial block size (default = 100)\n\n");
+	fprintf(stderr, "     -p          = generate gnuplot output\n");
+	fprintf(stderr, "     -c          = count the trials in the last (incomplete) block\n");
+	fprintf(stderr, "     -x          = DO NOT count the correction trials toward block totals\n");
+	fprintf(stderr, "     -v          = output to screen the total number of trials with each stimulus group\n");
+	fprintf(stderr, "     -m          = sort the data by stimulus exemplars\n\n");
+	fprintf(stderr, "     -s          = sort the data by splT bin\n\n");
+	fprintf(stderr, "     -l          = sort the data by stimulus class\n\n");
+	fprintf(stderr, "     -i          = sort the data by cue validity\n\n");
+	fprintf(stderr, "     -S value    = specify the subject ID number (required)\n");
+	fprintf(stderr, "     filename    = specify stimulus filename (required)\n");
+	exit(-1);
+      }
+      else{
+	fprintf(stderr, "Unknown option: %s.  Use '-h' for help.\n", av[i]);
+	exit (-1);
+      }
+    }
+    else{
+      stimfname = av[i];
+      if(DEBUG){fprintf(stderr, "stimfname: %s\n", stimfname);}
+      strcpy(stimfroot, stimfname);
+      stimfroot[ strlen(stimfname) - 5] = '\0';
+      if(DEBUG){fprintf(stderr, "stimfroot: %s\n", stimfroot);}
+    }
+  }
+  if (subjectid == 0){
+    fprintf(stderr, "ERROR: You must specify the subject ID (-S 999)\n");
+    exit(-1);
+  }
+  if (stimfname == NULL){
+    fprintf(stderr, "ERROR: You must specify the stimulus file name (ex: 'test')\n");
+    exit(-1);
+  }
+  
+  if(DEBUG==2){printf("%d\n%s\n", subjectid, stimfname);}
+  sprintf (infilename, "%d_%s.3ac_rDAT", subjectid, stimfroot);
+  if(DEBUG==2){printf("%s\n", infilename);}
+  fprintf(stderr, "Analyzing data in '%s'\n", infilename);
+  fprintf (stderr, "Number of trials per block = %d\n", blocksize);
+  
+  /* determine number of stimulus classes */
+  if ((stimfp = fopen(stimfname, "r")) == NULL){
+    fprintf(stderr, "ERROR!: problem opening stimulus file!: %s\n", stimfname);
+    exit (-1);
+  }
+  else{
+    classtest=-9999;
+    class = n_stimclass = nstims = ncues = 0;
+    while (fgets (stimfline, sizeof(line), stimfp) != NULL ){
+      sscanf(stimfline, "%d%s%s%d%d%d", &class, stimf, cuef, &freq, &Rrate, &Prate);
+      stimlist[nstims].class = class;
+      strcpy(stimlist[nstims].exem,  stimf);
+      strcpy(stimlist[nstims].qname, cuef);
+      nstims++;
+      if (class > classtest) {
+	classtest = class;
+	n_stimclass++;
+      }
+    }
+  }      
+  
+  /*set ngroups for the subsequent analysis */
+  if (bystim){ngroups = nstims;}
+  else if (byclass & bycue) {ngroups = ncue_cond*n_stimclass;}
+  else if (bysplT & bycue) {ngroups = ncue_cond*nspl_bins;}
+  else if (byclass) {ngroups = n_stimclass;}
+  else if (bycue) ngroups = ncue_cond;
+  else if (bysplT) ngroups = nspl_bins;
+  else ngroups=1;
+
+  if  ( (nstims > NMAXSTIMS) || (n_stimclass > NMAXSTIMS) ) {
+    fprintf(stderr, "ERROR!: number of stimulus exemplars or classes in '%s' exceeds the default maximum\n", stimfname);
+    exit(-1);}
+
+  if  (nstims == 0){
+    fprintf(stderr, "ERROR!: no stimuli detected in the input file '%s'\n", stimfname);
+    exit(-1);}
+
+  if (bystim) outtype=1;
+  else if (bysplT & bycue & byclass) outtype=2;
+  else if (bysplT & bycue) outtype=3;
+  else if (byclass & bycue) outtype=4;
+  else if (byclass) outtype=5;
+  else if (bycue) outtype=6;
+  else if (bysplT) outtype=7;
+
+  fprintf (stderr, "Number of stimulus classes = %d\n", n_stimclass);
+  fprintf (stderr, "Number of stimulus exemplars = %d\n", nstims);
+  fprintf (stderr, "Number of cue conditions (hard coded) = %d\n", ncue_cond);
+  fprintf (stderr, "Number of target spl bins (hard coded) = %d\n", nspl_bins);
+  fprintf (stderr, "Number of stimulus groups = %d\n", ngroups);
+  fprintf (stderr, "output type  = %d\n", outtype);
+  if(DEBUG){
+    for (i = 0; i < nstims; i++){
+      fprintf(stderr, "stimulus '%d' is '%s'\n", i, stimlist[i].exem);
+    }
+  }
+  
+  
+  /* setup output files */
+  if (plot_out == 1){
+    if (bystim){
+      sprintf(outfname, "%i_%s_bystim.3AC_XDAT", subjectid, stimfroot);
+      for  (i=0; i<nstims; i++)
+	fprintf(stderr, "stimulus file '%d': %s\n", i+1, stimlist[i].exem);
+      sprintf(plotfname, "%i_%s_bystim.plot_out", subjectid, stimfroot);}
+    else if (bysplT & bycue & byclass){
+      sprintf(outfname, "%i_%s_byclassQsplT.3AC_XDAT", subjectid, stimfroot);
+      sprintf(plotfname, "%i_%s_byclassQsplT.plot_out", subjectid, stimfroot);}
+    else if (bysplT & bycue){
+      sprintf(outfname, "%i_%s_bysplTQ.3AC_XDAT", subjectid, stimfroot);
+      sprintf(plotfname, "%i_%s_bysplTQ.plot_out", subjectid, stimfroot);}
+    else if (byclass & bycue){
+      sprintf(outfname, "%i_%s_byclassQ.3AC_XDAT", subjectid, stimfroot);
+      sprintf(plotfname, "%i_%s_byclassQ.plot_out", subjectid, stimfroot);}
+    else if (byclass){
+      sprintf(outfname, "%i_%s_byclass.3AC_XDAT", subjectid, stimfroot);
+      sprintf(plotfname, "%i_%s_byclass.plot_out", subjectid, stimfroot);}
+    else if (bycue){
+      sprintf(outfname, "%i_%s_byQ.3AC_XDAT", subjectid, stimfroot);
+      sprintf(plotfname, "%i_%s_byQ.plot_out", subjectid, stimfroot);}
+    else if (bysplT){
+      sprintf(outfname, "%i_%s_bysplT.3AC_XDAT", subjectid, stimfroot);
+      sprintf(plotfname, "%i_%s_bysplT.plot_out", subjectid, stimfroot);}
+    else{  
+      sprintf(outfname, "%i_%s.3AC_XDAT", subjectid, stimfroot);
+      sprintf(plotfname, "%i_%s.plot_out", subjectid, stimfroot);}
+    if ((plotfp = fopen(plotfname, "w")) == NULL){
+      fprintf(stderr, "ERROR!: problem opening data output file!: %s\n", outfname);
+      fclose(plotfp);
+      exit (-1);
+    }
+    fprintf(plotfp, "#gnuplot output file for %d with %s\n", subjectid, stimfname);
+  }  
+  if ((outfp = fopen(outfname, "w")) == NULL){
+    fprintf(stderr, "ERROR!: problem opening data output file!: %s\n", outfname);
+    fclose(outfp);  
+  }
+  /* open input file */
+  if ((infp = fopen(infilename, "r")) != NULL)
+    fprintf(stderr, "Working....\n");
+  else{
+    fprintf(stderr, "ERROR!: problem opening data input file!: %s\n", infilename);
+    exit (-1);
+  }    
+  fprintf(outfp, "#XDAT_output\t Subject %d\t stim %s\t outtype %d\t ngroups %d\n ", subjectid, stimfname, outtype, ngroups);  
+  
+  
+  /*zero all the output variables*/
+  for (i = 0; i<ngroups; i++){     
+    Rblock[i].C = Rblock[i].X = Rblock[i].X1 = Rblock[i].X2 = Rblock[i].X3 = Rblock[i].Xvc = Rblock[i].Xic = Rblock[i].N = 0;
+    Rblock[i].cC = Rblock[i].cX = Rblock[i].cX1 = Rblock[i].cX2 = Rblock[i].cX3 = Rblock[i].cXvc = Rblock[i].cXic =  Rblock[i].cN = 0;
+    Rblock[i].C_RT = Rblock[i].X_RT = Rblock[i].X1_RT =  Rblock[i].X2_RT = Rblock[i].X3_RT = Rblock[i].Xvc_RT = Rblock[i].Xic_RT = 0.0;
+    Rblock[i].cC_RT = Rblock[i].cX_RT = Rblock[i].cX1_RT = Rblock[i].cX2_RT = Rblock[i].cX3_RT = Rblock[i].cXvc_RT = Rblock[i].cXic_RT = 0.0;
+
+    Rtot[i].C = Rtot[i].X = Rtot[i].X1 = Rtot[i].X2 = Rtot[i].X3 = Rtot[i].Xvc = Rtot[i].Xic = Rtot[i].N = 0;
+    Rtot[i].cC = Rtot[i].cX = Rtot[i].cX1 = Rtot[i].cX2 = Rtot[i].cX3 = Rtot[i].cXvc = Rtot[i].cXic = Rtot[i].cN = 0;
+    Rtot[i].C_RT = Rtot[i].X_RT = Rtot[i].X1_RT = Rtot[i].X2_RT = Rtot[i].X3_RT = Rtot[i].Xvc_RT = Rtot[i].Xic_RT =  0.0;
+    Rtot[i].cC_RT = Rtot[i].cX_RT = Rtot[i].cX1_RT = Rtot[i].cX2_RT = Rtot[i].cX3_RT = Rtot[i].cXvc_RT = Rtot[i].cXic_RT  = 0.0;
+  }
+  trial_cnt = block_num = 0;
+
+  /* crunch the trial data */
+  while (fgets (line, sizeof(line), infp) != NULL ){                /* read in a line from infile */
+    sess_num = trl_num = trl_type = stim_class =  splT = 0;
+    resp_sel = resp_acc = resp_rt = resp_tod = resp_date = 0;
+    if (sscanf (line, "%d%d%d%s%s%d%f%d%d%f%d%d%d", &sess_num, &trl_num, &trl_type, exemplar, cue, 
+		&stim_class, &splT, &resp_sel, &resp_acc, &resp_rt, &reinf_val, &resp_tod, &resp_date) == 13){
+      /*set the group index values */
+      if(bystim == 1){
+	j=0;
+	while(strcmp(stimlist[j].exem, exemplar) != 0 )
+	  j++;
+	stim_group=j; /* set the index value for the stim on this trial */
+	if(DEBUG)
+	  if(trial_cnt%20==0){printf("exem: %s\tstimlist: %s\t j:%i\tstim_group:%i\n", exemplar, stimlist[stim_group].exem, j,stim_group);}
+      }
+      else
+	stim_group = -1;
+      if(DEBUG==2){fprintf(stderr,"stim group:%d \t", stim_group);}
+
+      if(byclass == 1){
+	j=0;
+	while(stimlist[j].class < stim_class)
+	  j++;
+	class_group=j; /* set the index value for the class on this trial */
+	if(DEBUG)
+	  if(trial_cnt%20==0){printf("stim_class: %i\tstimlist: %i\t j:%i\tstim_group:%i\n", stim_class, stimlist[class_group].class, j,class_group);}
+      }
+      else 
+	class_group = -1;
+      if(DEBUG==2){fprintf(stderr,"class group: %d \t", class_group);
+      }
+
+
+      j=0;
+      test=-1;
+      if (strncmp(cue,"NOCUE",4)==0)
+	cue_group=1;
+      else if (stim_class==-1)
+	cue_group=2;
+      else { 
+	while(stimlist[j].class < stim_class)
+	  j++;
+	if (strncmp(stimlist[j].qname,cue,4)==0){
+	  cue_group=0;} 
+	else
+	  cue_group=2;
+      }
+     
+      
+      if(DEBUG==2){fprintf(stderr,"cue group: %d \t", cue_group);
+      }
+      
+      if(bysplT == 1){
+	if (splT < 1){
+	  spl_group=0;
+	}
+	for (i=0;i<(nspl_bins-1);++i){
+	  high_bin=out_minDB+((i+1)*binsize);
+	  low_bin=out_minDB+(i*binsize);
+	  if ((splT>=low_bin) && (splT < high_bin)){
+	    spl_group=i+1;
+	  }
+	}
+      }	  
+      else 
+	spl_group = -1;
+      if(DEBUG==2){fprintf(stderr,"target spl group: %d \t", spl_group);
+      }
+
+ 
+      /*sort the data*/
+      if (outtype==1)
+	group=stim_group;
+      /*       else if (outtype==2) */
+      /* 	group=??; */
+      else if (outtype==3)
+	group=ncue_cond*spl_group+cue_group;
+      else if (outtype==4)
+        group=ncue_cond*class_group+cue_group;
+      else if (outtype==5)
+	group= class_group;
+      else if (outtype==6)
+        group= cue_group;
+      else if (outtype==7)
+        group= spl_group;
+      else
+	group=0;
+/*       if(spl_group==5)fprintf(stderr,"block=%d splT=%.4f class=%d cue_group=%d, group=%d\n", block_num, splT, stim_class, cue_group, group); */
+      
+
+
+      if (trl_type == 1){                                      /* non-correction trial */
+	if(DEBUG==2){printf("non-correction trial\t");}
+
+	if (resp_sel == -1){                                              /* no resp */
+	  Rblock[group].N++;
+	  cx_src = 2;                            /* correction trial source is no-resp*/
+	}                                          
+	else if (resp_acc == 1){                                         /* correct resp */
+	  Rblock[group].C++;                               
+	  Rblock[group].C_RT = Rblock[group].C_RT  + resp_rt;  /* add to rt sum */
+	  trial_cnt++; cx_src=0;
+	}                                                  /* add to trials/block count */
+	else if (resp_acc == 0){                                         /* incorrect resp */
+	  Rblock[group].X++;                                 
+	  Rblock[group].X_RT = Rblock[group].X_RT + resp_rt;
+	  trial_cnt++; cx_src = 1;           /* correction trial source is incorrect resp*/
+	  if (resp_sel == 1){
+	    Rblock[group].X1++;
+	    Rblock[group].X1_RT = Rblock[group].X1_RT + resp_rt;
+	    if (strncmp(cue,"low",3)==0 & cue_group==2){
+	      Rblock[group].Xvc++;
+	      Rblock[group].Xvc_RT = Rblock[group].Xvc_RT +resp_rt;}
+	    else if (strncmp(cue,"med",3)==0 & cue_group==2){
+	      Rblock[group].Xic++;
+	      Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	    else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+	      Rblock[group].Xic++;
+	      Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	  }
+	  else if (resp_sel == 0){
+	    Rblock[group].X2++;
+	    Rblock[group].X2_RT = Rblock[group].X2_RT + resp_rt;
+	    if (strncmp(cue,"low",3)==0 & cue_group==2){
+	      Rblock[group].Xic++;
+	      Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	    else if (strncmp(cue,"med",3)==0 & cue_group==2){
+	      Rblock[group].Xvc++;
+	      Rblock[group].Xvc_RT = Rblock[group].Xvc_RT +resp_rt;}
+	    else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+	      Rblock[group].Xic++;
+	      Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	  }
+	  else if (resp_sel == 2){
+	    Rblock[group].X3++;
+	    Rblock[group].X3_RT = Rblock[group].X3_RT + resp_rt;
+	    if (strncmp(cue,"low",3)==0 & cue_group==2){
+	      Rblock[group].Xic++;
+	      Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	    else if (strncmp(cue,"med",3)==0 & cue_group==2){
+	      Rblock[group].Xic++;
+	      Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	    else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+	      Rblock[group].Xvc++;
+	      Rblock[group].Xvc_RT = Rblock[group].Xvc_RT +resp_rt;}
+	  }
+	}                           
+      }
+
+      else if (trl_type == 0){                                 /* correction trial */
+	if(DEBUG==2){printf("correction trial\t");}
+	if (cx_src==2){                   /*correction trial generated from no-resp on previous trial, so responses are valid */ 
+	  if (resp_sel == -1){                                              /* no resp to correction trial*/
+	    Rblock[group].N++;}
+	  else if (resp_acc == 1){
+	    Rblock[group].C++;                               
+	    Rblock[group].C_RT = Rblock[group].C_RT  + resp_rt;
+	    trial_cnt++;                                                     /* add to trials/block count */
+	  }
+	  else if (resp_acc == 0){      
+	    Rblock[group].X++;                                 
+	    Rblock[group].X_RT = Rblock[group].X_RT + resp_rt;         
+	    trial_cnt++;
+	    if (resp_sel == 1){
+	      Rblock[group].X1++;
+	      Rblock[group].X1_RT = Rblock[group].X1_RT + resp_rt;
+	      if (strncmp(cue,"low",3)==0 & cue_group==2){
+		Rblock[group].Xvc++;
+		Rblock[group].Xvc_RT = Rblock[group].Xvc_RT +resp_rt;}
+	      else if (strncmp(cue,"med",3)==0 & cue_group==2){
+		Rblock[group].Xic++;
+		Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	      else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+		Rblock[group].Xic++;
+		Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	    }
+	    else if (resp_sel == 0){
+	      Rblock[group].X2++;
+	      Rblock[group].X2_RT = Rblock[group].X2_RT + resp_rt;
+	      if (strncmp(cue,"low",3)==0 & cue_group==2){
+		Rblock[group].Xic++;
+		Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	      else if (strncmp(cue,"med",3)==0 & cue_group==2){
+		Rblock[group].Xvc++;
+		Rblock[group].Xvc_RT = Rblock[group].Xvc_RT +resp_rt;}
+	      else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+		Rblock[group].Xic++;
+		Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	    }
+	    else if (resp_sel == 2){
+	      Rblock[group].X3++;
+	      Rblock[group].X3_RT = Rblock[group].X3_RT + resp_rt;
+	      if (strncmp(cue,"low",3)==0 & cue_group==2){
+		Rblock[group].Xic++;
+		Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	      else if (strncmp(cue,"med",3)==0 & cue_group==2){
+		Rblock[group].Xic++;
+		Rblock[group].Xic_RT = Rblock[group].Xic_RT +resp_rt;}
+	      else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+		Rblock[group].Xvc++;
+		Rblock[group].Xvc_RT = Rblock[group].Xvc_RT +resp_rt;}
+	    }
+	    cx_src = 1;/*change the correction trial source from NO-resp to X-resp */
+	  }
+	}
+	else if(cx_src==1){               /*correction trial generated from incorrect resp on previous trial, so responses are not valid */ 
+	  if (resp_sel == -1)                                              /* no resp to correction trial*/
+	    Rblock[group].cN++;
+	  else if (resp_acc == 1){
+	    Rblock[group].cC++;                               
+	    Rblock[group].cC_RT = Rblock[group].cC_RT + resp_rt;               /* add to rt sum */
+	    if (cnt_cx==1) 
+	      trial_cnt++;     
+	  }                                  /* add to trials/block count (if we're counting cx trials)*/           
+	  else if (resp_acc == 0){      
+	    Rblock[group].cX++;                                 
+	    Rblock[group].cX_RT = Rblock[group].cX_RT + resp_rt;         
+	    if (cnt_cx==1)
+	      trial_cnt++;
+	    if (resp_sel == 1){
+	      Rblock[group].cX1++;
+	      Rblock[group].cX1_RT = Rblock[group].cX1_RT + resp_rt;
+	      if (strncmp(cue,"low",3)==0 & cue_group==2){
+		Rblock[group].cXvc++;
+		Rblock[group].cXvc_RT = Rblock[group].cXvc_RT +resp_rt;}
+	      else if (strncmp(cue,"med",3)==0 & cue_group==2){
+		Rblock[group].cXic++;
+		Rblock[group].cXic_RT = Rblock[group].cXic_RT +resp_rt;}
+	      else if (strncmp(cue,"hig",3)==0 & cue_group==20){
+		Rblock[group].cXic++;
+		Rblock[group].cXic_RT = Rblock[group].cXic_RT +resp_rt;}
+	    }
+	    else if (resp_sel == 0){
+	      Rblock[group].cX2++;
+	      Rblock[group].cX2_RT = Rblock[group].cX2_RT + resp_rt;
+	      if (strncmp(cue,"low",3)==0 & cue_group==2){
+		Rblock[group].cXic++;
+		Rblock[group].cXic_RT = Rblock[group].cXic_RT +resp_rt;}
+	      else if (strncmp(cue,"med",3)==0 & cue_group==2){
+		Rblock[group].cXvc++;
+		Rblock[group].cXvc_RT = Rblock[group].cXvc_RT +resp_rt;}
+	      else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+		Rblock[group].cXic++;
+		Rblock[group].cXic_RT = Rblock[group].cXic_RT +resp_rt;}
+	    }
+	    else if (resp_sel == 2){
+	      Rblock[group].cX3++;
+	      Rblock[group].cX3_RT = Rblock[group].cX3_RT + resp_rt;
+	      if (strncmp(cue,"low",3)==0 & cue_group==2){
+		Rblock[group].cXic++;
+		Rblock[group].cXic_RT = Rblock[group].cXic_RT +resp_rt;}
+	      else if (strncmp(cue,"med",3)==0 & cue_group==2){
+		Rblock[group].cXic++;
+		Rblock[group].cXic_RT = Rblock[group].cXic_RT +resp_rt;}
+	      else if (strncmp(cue,"hig",3)==0 & cue_group==2){
+		Rblock[group].cXvc++;
+		Rblock[group].cXvc_RT = Rblock[group].cXvc_RT +resp_rt;}
+	    }
+	  }
+	}	  
+	else         /*correction trial following correct response, this is bad*/
+	  fprintf(stderr,"WARNING!:: trial type '0' following correct response (trial:%d session:%d) you should investigate\n", trl_num, sess_num);
+      }
+    }   
+/*     if (group==1) */
+/*       fprintf(stderr,"\n trial=%d, block=%d, group=%i, resp_acc=%d resp_sel=%d cue=%s, Xvc=%d cXvc=%d, Xic=%d cXic=%d", trial_cnt, block_num+1, group, resp_acc, resp_sel, cue, Rblock[group].Xvc, Rblock[group].cXvc, Rblock[group].Xic, Rblock[group].cXic); /\* delete *\/ */
+    if (trial_cnt == blocksize){
+      if(DEBUG){fprintf(stderr, "done with block: %d\n", block_num);}
+      block_num++;
+      /* figure mean RTs for the block */  
+      for (i = 0; i< ngroups; i++){
+	if  (Rblock[i].C > 0) Rblock[i].C_RT = Rblock[i].C_RT/(float)Rblock[i].C;
+	if  (Rblock[i].X > 0) Rblock[i].X_RT = Rblock[i].X_RT/(float)Rblock[i].X;
+	if  (Rblock[i].X1 > 0) Rblock[i].X1_RT = Rblock[i].X1_RT/(float)Rblock[i].X1;
+	if  (Rblock[i].X2 > 0) Rblock[i].X2_RT = Rblock[i].X2_RT/(float)Rblock[i].X2;
+	if  (Rblock[i].X3 > 0) Rblock[i].X3_RT = Rblock[i].X3_RT/(float)Rblock[i].X3;
+	if  (Rblock[i].Xvc > 0) Rblock[i].Xvc_RT = Rblock[i].Xvc_RT/(float)Rblock[i].Xvc;
+	if  (Rblock[i].Xic > 0) Rblock[i].Xic_RT = Rblock[i].Xic_RT/(float)Rblock[i].Xic;
+	if  (Rblock[i].cC > 0) Rblock[i].cC_RT = Rblock[i].cC_RT/(float)Rblock[i].cC;
+	if  (Rblock[i].cX > 0) Rblock[i].cX_RT = Rblock[i].cX_RT/(float)Rblock[i].cX;
+	if  (Rblock[i].cX1 > 0) Rblock[i].cX1_RT = Rblock[i].cX1_RT/(float)Rblock[i].cX1;
+	if  (Rblock[i].cX2 > 0) Rblock[i].cX2_RT = Rblock[i].cX2_RT/(float)Rblock[i].cX2;
+	if  (Rblock[i].cX3 > 0) Rblock[i].cX3_RT = Rblock[i].cX3_RT/(float)Rblock[i].cX3;
+	if  (Rblock[i].cXvc > 0) Rblock[i].cXvc_RT = Rblock[i].cXvc_RT/(float)Rblock[i].cXvc;
+	if  (Rblock[i].cXic > 0) Rblock[i].cXic_RT = Rblock[i].cXic_RT/(float)Rblock[i].cXic;
+      }
+      /*ouput the block data */
+      for (i = 0; i < ngroups; i++){
+	fprintf(outfp, "%i\t%d %d %d %d %d %d %d %d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t", 
+		i,Rblock[i].C, Rblock[i].X, Rblock[i].Xvc, Rblock[i].Xic, Rblock[i].X1, Rblock[i].X2, Rblock[i].X3, Rblock[i].N, Rblock[i].C_RT, Rblock[i].X_RT, Rblock[i].Xvc_RT, Rblock[i].Xic_RT, Rblock[i].X1_RT, Rblock[i].X2_RT, Rblock[i].X3_RT);
+	fprintf(outfp, "%d %d %d %d %d %d %d %d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t",
+		Rblock[i].cC, Rblock[i].cX, Rblock[i].cXvc, Rblock[i].cXic, Rblock[i].cX1, Rblock[i].cX2, Rblock[i].cX3, Rblock[i].cN, Rblock[i].cC_RT, Rblock[i].cX_RT,Rblock[i].cXvc_RT, Rblock[i].cXic_RT, Rblock[i].cX1_RT, Rblock[i].cX2_RT, Rblock[i].cX3_RT);
+	fprintf(outfp, "\n");}
+      fflush(outfp);
+      
+      if(DEBUG){
+	for (i = 0; i < ngroups; i++){
+	  fprintf(stderr, "%i\t%d %d %d %d %d %d %d %d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t", 
+		  i,Rblock[i].C, Rblock[i].X, Rblock[i].Xvc, Rblock[i].Xic, Rblock[i].X1, Rblock[i].X2, Rblock[i].X3, Rblock[i].N, Rblock[i].C_RT, Rblock[i].X_RT, Rblock[i].Xvc_RT, Rblock[i].Xic_RT, Rblock[i].X1_RT, Rblock[i].X2_RT, Rblock[i].X3_RT);
+	  fprintf(outfp, "%d %d %d %d %d %d %d %d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t",
+		  Rblock[i].cC, Rblock[i].cX, Rblock[i].cXvc, Rblock[i].cXic, Rblock[i].cX1, Rblock[i].cX2, Rblock[i].cX3, Rblock[i].cN, Rblock[i].cC_RT, Rblock[i].cX_RT,Rblock[i].cXvc_RT, Rblock[i].cXic_RT, Rblock[i].cX1_RT, Rblock[i].cX2_RT, Rblock[i].cX3_RT);
+	  fprintf(stderr, "\n"); }
+	fflush(stderr);
+      } 
+     
+      if (outtype==5){
+	if(plot_out == 1){
+	  fprintf(plotfp, "%d\t", block_num );
+	  pC[0] = (float) Rblock[0].N/( (float) (Rblock[0].N + Rblock[0].X) );
+	  fprintf(plotfp, "%.4f\t", pC[0] );
+	  for (i = 1; i < ngroups; i++){
+	    pC[i] = (float) Rblock[i].C /( (float) (Rblock[i].C + Rblock[i].X) );
+	    fprintf(plotfp, "%.4f\t", pC[i] );
+	  }
+	  fprintf(plotfp, "%.4f\n",(float)(resp_tod)/19000.0 );
+	  fflush(plotfp);
+	}
+      }
+      else{
+	for (i = 0; i < ngroups; i++){
+	  pC[i] = (float) Rblock[i].C /( (float) (Rblock[i].C + Rblock[i].X) );
+	  fprintf(plotfp, "%.4f\t", pC[i] );
+	}
+	fprintf(plotfp, "%.4f\n",(float)(resp_tod)/19000.0 );
+	fflush(plotfp);
+      }
+      
+      if(DEBUG){
+	fprintf(stderr, "%d\t", block_num );
+	for (i = 0; i < ngroups; i++){
+	  pC[i] = (float) Rblock[i].C /( (float) (Rblock[i].C + Rblock[i].X) );
+	  fprintf(stderr, "%f\t", pC[i] );
+	}
+	fprintf(stderr, "%.4f\n",(float)(resp_tod)/19000.0 );
+      }
+	
+      /*update your totals*/
+      for (i = 0; i < ngroups; i++){    
+	Rtot[i].C_RT += ((Rblock[i].C_RT * Rblock[i].C)+(Rtot[i].C_RT * Rtot[i].C))/(Rtot[i].C + Rblock[i].C);
+	Rtot[i].X_RT += ((Rblock[i].X_RT * Rblock[i].X)+(Rtot[i].X_RT * Rtot[i].X))/(Rtot[i].X + Rblock[i].X);
+	Rtot[i].X1_RT += ((Rblock[i].X1_RT * Rblock[i].X1)+(Rtot[i].X1_RT * Rtot[i].X1))/(Rtot[i].X1 + Rblock[i].X1);
+	Rtot[i].X2_RT += ((Rblock[i].X2_RT * Rblock[i].X2)+(Rtot[i].X2_RT * Rtot[i].X2))/(Rtot[i].X2 + Rblock[i].X2);
+	Rtot[i].X3_RT += ((Rblock[i].X3_RT * Rblock[i].X3)+(Rtot[i].X3_RT * Rtot[i].X3))/(Rtot[i].X3 + Rblock[i].X3);
+	Rtot[i].Xvc_RT += ((Rblock[i].Xvc_RT * Rblock[i].Xvc)+(Rtot[i].Xvc_RT * Rtot[i].Xvc))/(Rtot[i].Xvc + Rblock[i].Xvc);
+	Rtot[i].Xic_RT += ((Rblock[i].Xic_RT * Rblock[i].Xic)+(Rtot[i].Xic_RT * Rtot[i].Xic))/(Rtot[i].Xic + Rblock[i].Xic);
+	Rtot[i].cC_RT += ((Rblock[i].cC_RT * Rblock[i].cC)+(Rtot[i].cC_RT * Rtot[i].cC))/(Rtot[i].cC + Rblock[i].cC);
+	Rtot[i].cX_RT += ((Rblock[i].cX_RT * Rblock[i].cX)+(Rtot[i].cX_RT * Rtot[i].cX))/(Rtot[i].cX + Rblock[i].cX);
+	Rtot[i].cX1_RT += ((Rblock[i].cX1_RT * Rblock[i].cX1)+(Rtot[i].cX1_RT * Rtot[i].cX1))/(Rtot[i].cX1 + Rblock[i].cX1);
+	Rtot[i].cX2_RT += ((Rblock[i].cX2_RT * Rblock[i].cX2)+(Rtot[i].cX2_RT * Rtot[i].cX2))/(Rtot[i].cX2 + Rblock[i].cX2);
+	Rtot[i].cX3_RT += ((Rblock[i].cX3_RT * Rblock[i].cX3)+(Rtot[i].cX3_RT * Rtot[i].cX3))/(Rtot[i].cX3 + Rblock[i].cX3);
+	Rtot[i].cXvc_RT += ((Rblock[i].cXvc_RT * Rblock[i].cXvc)+(Rtot[i].cXvc_RT * Rtot[i].cXvc))/(Rtot[i].cXvc + Rblock[i].cXvc);
+	Rtot[i].cXic_RT += ((Rblock[i].cXic_RT * Rblock[i].cXic)+(Rtot[i].cXic_RT * Rtot[i].cXic))/(Rtot[i].cXic + Rblock[i].cXic);
+	Rtot[i].C += Rblock[i].C;
+	Rtot[i].X += Rblock[i].X;
+	Rtot[i].X1 += Rblock[i].X1;
+	Rtot[i].X2 += Rblock[i].X2;
+	Rtot[i].X3 += Rblock[i].X3;
+	Rtot[i].Xvc += Rblock[i].Xvc;
+	Rtot[i].Xic += Rblock[i].Xic;
+	Rtot[i].N += Rblock[i].N;
+	Rtot[i].cC += Rblock[i].cC;
+	Rtot[i].cX += Rblock[i].cX;
+	Rtot[i].cX1 += Rblock[i].cX1;
+	Rtot[i].cX2 += Rblock[i].cX2;
+	Rtot[i].cX3 += Rblock[i].cX3;
+	Rtot[i].cXvc += Rblock[i].cXvc;
+	Rtot[i].cXic += Rblock[i].cXic;
+	Rtot[i].cN += Rblock[i].cN;	
+      }
+      
+
+      /* reset block variables */
+      for (i = 0; i < ngroups; i++){             /*zero all the output variables*/
+	Rblock[i].C = Rblock[i].X = Rblock[i].X1 = Rblock[i].X2 = Rblock[i].X3 = Rblock[i].Xvc = Rblock[i].Xic = Rblock[i].N = 0;
+	Rblock[i].cC = Rblock[i].cX = Rblock[i].cX1 = Rblock[i].cX2 = Rblock[i].cX3 = Rblock[i].cXvc = Rblock[i].cXic =  Rblock[i].cN = 0;
+	Rblock[i].C_RT = Rblock[i].X_RT = Rblock[i].X1_RT =  Rblock[i].X2_RT = Rblock[i].X3_RT = Rblock[i].Xvc_RT = Rblock[i].Xic_RT = 0.0;
+	Rblock[i].cC_RT = Rblock[i].cX_RT = Rblock[i].cX1_RT = Rblock[i].cX2_RT = Rblock[i].cX3_RT = Rblock[i].cXvc_RT = Rblock[i].cXic_RT = 0.0;
+	pC[i] = 0.0;
+      }
+      trial_cnt =0;
+    }		     
+  }
+  /* EOF loop */
+  if(DEBUG){fprintf(stderr, "finished t he file\n");}
+  
+
+  /* output last block of data */
+  if (lastblock){
+    if (trial_cnt != 0){
+      block_num++;
+      /*ouput the data */   
+      for (i = 0; i< ngroups; i++){	
+	if  (Rblock[i].C > 0) Rblock[i].C_RT = Rblock[i].C_RT/(float)Rblock[i].C;
+	if  (Rblock[i].X > 0) Rblock[i].X_RT = Rblock[i].X_RT/(float)Rblock[i].X;
+	if  (Rblock[i].X1 > 0) Rblock[i].X1_RT = Rblock[i].X1_RT/(float)Rblock[i].X1;
+	if  (Rblock[i].X2 > 0) Rblock[i].X2_RT = Rblock[i].X2_RT/(float)Rblock[i].X2;
+	if  (Rblock[i].X3 > 0) Rblock[i].X3_RT = Rblock[i].X3_RT/(float)Rblock[i].X3;
+	if  (Rblock[i].Xvc > 0) Rblock[i].Xvc_RT = Rblock[i].Xvc_RT/(float)Rblock[i].Xvc;
+	if  (Rblock[i].Xic > 0) Rblock[i].Xic_RT = Rblock[i].Xic_RT/(float)Rblock[i].Xic;
+	if  (Rblock[i].cC > 0) Rblock[i].cC_RT = Rblock[i].cC_RT/(float)Rblock[i].cC;
+	if  (Rblock[i].cX > 0) Rblock[i].cX_RT = Rblock[i].cX_RT/(float)Rblock[i].cX;
+     	if  (Rblock[i].cX1 > 0) Rblock[i].cX1_RT = Rblock[i].cX1_RT/(float)Rblock[i].cX1;
+	if  (Rblock[i].cX2 > 0) Rblock[i].cX2_RT = Rblock[i].cX2_RT/(float)Rblock[i].cX2;
+	if  (Rblock[i].cX3 > 0) Rblock[i].cX3_RT = Rblock[i].cX3_RT/(float)Rblock[i].cX3;
+	if  (Rblock[i].cXvc > 0) Rblock[i].cXvc_RT = Rblock[i].cXvc_RT/(float)Rblock[i].cXvc;
+	if  (Rblock[i].cXic > 0) Rblock[i].cXic_RT = Rblock[i].cXic_RT/(float)Rblock[i].cXic;
+      }
+
+      /*ouput the block data */
+      for (i = 0; i < ngroups; i++){
+	fprintf(outfp, "%i\t%d %d %d %d %d %d %d %d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t", 
+		i,Rblock[i].C, Rblock[i].X, Rblock[i].Xvc, Rblock[i].Xic, Rblock[i].X1, Rblock[i].X2, Rblock[i].X3, Rblock[i].N, Rblock[i].C_RT, Rblock[i].X_RT, Rblock[i].Xvc_RT, Rblock[i].Xic_RT, Rblock[i].X1_RT, Rblock[i].X2_RT, Rblock[i].X3_RT);
+      }
+      for (i = 0; i < ngroups; i++){
+	fprintf(outfp, "%d %d %d %d %d %d %d %d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t",
+		Rblock[i].cC, Rblock[i].cX, Rblock[i].cXvc, Rblock[i].cXic, Rblock[i].cX1, Rblock[i].cX2, Rblock[i].cX3, Rblock[i].cN, Rblock[i].cC_RT, Rblock[i].cX_RT,Rblock[i].cXvc_RT, Rblock[i].cXic_RT, Rblock[i].cX1_RT, Rblock[i].cX2_RT, Rblock[i].cX3_RT);
+      }
+      //fseek(outfp, -1, SEEK_END); 
+      fprintf(outfp, "\n");
+      fflush(outfp);
+     
+      if(plot_out == 1){
+	fprintf(plotfp, "%d\t", block_num );
+	for (i = 0; i < ngroups; i++){
+	  pC[i] = (float) Rblock[i].C /( (float) (Rblock[i].C + Rblock[i].X) );
+	  fprintf(plotfp, "%f\t", pC[i] );
+	}
+	fprintf(plotfp, "%.4f\n",(float)(resp_tod)/19000.0 );
+	fflush(plotfp);
+      }
+
+      /* update the totals */
+      for (i = 0; i < ngroups; i++){  
+	Rtot[i].C_RT += ((Rblock[i].C_RT * Rblock[i].C)+(Rtot[i].C_RT * Rtot[i].C))/(Rtot[i].C + Rblock[i].C);
+	Rtot[i].X_RT += ((Rblock[i].X_RT * Rblock[i].X)+(Rtot[i].X_RT * Rtot[i].X))/(Rtot[i].X + Rblock[i].X);
+	Rtot[i].X1_RT += ((Rblock[i].X1_RT * Rblock[i].X1)+(Rtot[i].X1_RT * Rtot[i].X1))/(Rtot[i].X1 + Rblock[i].X1);
+	Rtot[i].X2_RT += ((Rblock[i].X2_RT * Rblock[i].X2)+(Rtot[i].X2_RT * Rtot[i].X2))/(Rtot[i].X2 + Rblock[i].X2);
+	Rtot[i].X3_RT += ((Rblock[i].X3_RT * Rblock[i].X3)+(Rtot[i].X3_RT * Rtot[i].X3))/(Rtot[i].X3 + Rblock[i].X3);
+	Rtot[i].Xvc_RT += ((Rblock[i].Xvc_RT * Rblock[i].Xvc)+(Rtot[i].Xvc_RT * Rtot[i].Xvc))/(Rtot[i].Xvc + Rblock[i].Xvc);
+	Rtot[i].Xic_RT += ((Rblock[i].Xic_RT * Rblock[i].Xic)+(Rtot[i].Xic_RT * Rtot[i].Xic))/(Rtot[i].Xic + Rblock[i].Xic);
+	Rtot[i].cC_RT += ((Rblock[i].cC_RT * Rblock[i].cC)+(Rtot[i].cC_RT * Rtot[i].cC))/(Rtot[i].cC + Rblock[i].cC);
+	Rtot[i].cX_RT += ((Rblock[i].cX_RT * Rblock[i].cX)+(Rtot[i].cX_RT * Rtot[i].cX))/(Rtot[i].cX + Rblock[i].cX);
+	Rtot[i].cX1_RT += ((Rblock[i].cX1_RT * Rblock[i].cX1)+(Rtot[i].cX1_RT * Rtot[i].cX1))/(Rtot[i].cX1 + Rblock[i].cX1);
+	Rtot[i].cX2_RT += ((Rblock[i].cX2_RT * Rblock[i].cX2)+(Rtot[i].cX2_RT * Rtot[i].cX2))/(Rtot[i].cX2 + Rblock[i].cX2);
+	Rtot[i].cX3_RT += ((Rblock[i].cX3_RT * Rblock[i].cX3)+(Rtot[i].cX3_RT * Rtot[i].cX3))/(Rtot[i].cX3 + Rblock[i].cX3);
+	Rtot[i].cXvc_RT += ((Rblock[i].cXvc_RT * Rblock[i].cXvc)+(Rtot[i].cXvc_RT * Rtot[i].cXvc))/(Rtot[i].cXvc + Rblock[i].cXvc);
+	Rtot[i].cXic_RT += ((Rblock[i].cXic_RT * Rblock[i].cXic)+(Rtot[i].cXic_RT * Rtot[i].cXic))/(Rtot[i].cXic + Rblock[i].cXic);
+	Rtot[i].C += Rblock[i].C;
+	Rtot[i].X += Rblock[i].X;
+	Rtot[i].X1 += Rblock[i].X1;
+	Rtot[i].X2 += Rblock[i].X2;
+	Rtot[i].X3 += Rblock[i].X3;
+	Rtot[i].Xvc += Rblock[i].Xvc;
+	Rtot[i].Xic += Rblock[i].Xic;
+	Rtot[i].N += Rblock[i].N;
+	Rtot[i].cC += Rblock[i].cC;
+	Rtot[i].cX += Rblock[i].cX;
+	Rtot[i].cX1 += Rblock[i].cX1;
+	Rtot[i].cX2 += Rblock[i].cX2;
+	Rtot[i].cX3 += Rblock[i].cX3;
+	Rtot[i].cXvc += Rblock[i].cXvc;
+	Rtot[i].cXic += Rblock[i].cXic;
+	Rtot[i].cN += Rblock[i].cN;	
+      }
+    }
+  }
+ 
+  fclose (outfp);
+  fclose (infp);
+  if(plot_out)
+    fclose(plotfp);
+  
+  fprintf(stderr, "\n\t....Done\n");
+
+  printf("Total Number of Blocks: %d\n", block_num);
+  if (lastblock){
+    if (blocksize!=trial_cnt){
+      printf("LAST BLOCK IS INCOMPLETE: contains %d trials\n", trial_cnt);} 
+    else{
+      printf("LAST BLOCK IS COMPLETE\n");}
+  }
+  else{
+    if (blocksize!=trial_cnt){
+      printf("LAST BLOCK IS COMPLETE; but the last %d trials not counted\n", trial_cnt);}
+    else{
+      printf("LAST BLOCK IS COMPLETE: all trials counted\n");} 
+  }
+  printf("last trial run at %d %d\n", resp_tod , resp_date);
+  
+  
+  if (printstimcount==1){
+    printf("\nNumber of trials per stimulus group\n");
+    if(bystim){
+      fprintf(stderr,"NON_CORRECION TRIALS\n");
+      for (i=0; i<ngroups; i++)  
+	fprintf(stderr, "\t'%s'\tCorr:%d\tIncorr:%d\t No-R:%d\t Total:%d\n", stimlist[i].exem, Rtot[i].C, Rtot[i].X, Rtot[i].N, Rtot[i].C+Rtot[i].X);
+      fprintf(stderr,"CORRECION TRIALS\n");
+      for (i=0; i<ngroups; i++)  
+	fprintf(stderr, "\t'%s'\tCorr:%d\tIncorr:%d\t No-R:%d\t Total:%d\n", stimlist[i].exem, Rtot[i].cC, Rtot[i].cX, Rtot[i].cN, Rtot[i].cC+Rtot[i].cX);
+      fprintf(stderr,"ALL TRIALS\n");
+      for (i=0; i<ngroups; i++)  
+	fprintf(stderr, "\t'%s'\tCorr:%d\tIncorr:%d\t No-R:%d\t Total:%d\n", 
+		stimlist[i].exem, Rtot[i].C+Rtot[i].cC, Rtot[i].X+Rtot[i].cX, Rtot[i].N+Rtot[i].cN, Rtot[i].C+Rtot[i].X+Rtot[i].cC+Rtot[i].cX);
+    }
+    else{
+      fprintf(stderr,"NON_CORRECION TRIALS\n");
+      for (i=0; i<ngroups; i++)  
+	fprintf(stderr, "\tclass:%d\tCorr:%d\tIncorr:%d\t No-R:%d\t Total:%d\n", i+1, Rtot[i].C, Rtot[i].X, Rtot[i].N, Rtot[i].C+Rtot[i].X);
+      fprintf(stderr,"CORRECION TRIALS\n");
+      for (i=0; i<ngroups; i++)  
+	fprintf(stderr, "\tclass:%d\tCorr:%d\tIncorr:%d\t No-R:%d\t Total:%d\n", i+1, Rtot[i].cC, Rtot[i].cX, Rtot[i].cN, Rtot[i].cC+Rtot[i].cX);
+      fprintf(stderr,"ALL TRIALS\n");
+      for (i=0; i<ngroups; i++)  
+	fprintf(stderr, "\tclass:%d\tCorr:%d\tIncorr:%d\t No-R:%d\t Total:%d\n", 
+		i+1, Rtot[i].C+Rtot[i].cC, Rtot[i].X+Rtot[i].cX, Rtot[i].N+Rtot[i].cN, Rtot[i].C+Rtot[i].X+Rtot[i].cC+Rtot[i].cX);
+    }
+  }
+  
+  return 0;
+  
+}
+
+
+
+
+
+
+
+

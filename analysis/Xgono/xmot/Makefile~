@@ -1,0 +1,6 @@
+all:
+	gcc -Wall Xgonomot.c -o Xgonomot
+
+clean:
+	rm -rf *.o Xgonomot
+

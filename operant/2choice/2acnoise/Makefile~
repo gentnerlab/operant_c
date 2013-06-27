@@ -1,0 +1,6 @@
+all:
+	gcc -Wall 2acQLT.c -lsndfile -lasound -lcomedi -o 2acQLT
+
+clean:
+	rm -rf *.o 2acQLT
+

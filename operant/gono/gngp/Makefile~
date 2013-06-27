@@ -1,0 +1,6 @@
+all:
+	gcc -Wall gngp.c -lsndfile -lasound -lcomedi -o gngp
+
+clean:
+	rm -rf *.o gngp
+

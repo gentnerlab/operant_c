@@ -1,0 +1,3 @@
+
+
+extern int socket_checkconn(int fd, int *newfd_p)

@@ -1,0 +1,6 @@
+all:
+	gcc -Wall classchoice1spk.c -lsndfile -lasound -lcomedi -o cc1spk
+
+clean:
+	rm -rf *.o cc1spk
+

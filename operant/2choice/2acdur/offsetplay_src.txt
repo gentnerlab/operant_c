@@ -1,0 +1,96 @@
+/**********************************************************************
+ extract stim
+**********************************************************************/	
+int make_stim(char *sfname, int stimdur, int stimoffset, char *outsfname)
+{
+  SNDFILE *sourcef;
+  SF_INFO *sourcefinfo;
+  double inframes, maxframes, stimframes;
+  sf_count_t offset;
+
+  sourcefinfo = (SF_INFO *) malloc(sizeof(SF_INFO));
+  
+  if(!(sourcef = sf_open(sfname,SFM_READ,sourcefinfo))){
+    fprintf(stderr,"error opening input file %s\n",sfname);
+    free(sourcefinfo);
+    return -1;
+  }
+  
+  /* extract the stimulus to play */
+  if (stimoffset< 0){
+    fprintf (stderr, "Stimulus offset value must be greater than or equal to zero\n");
+    sf_close(sourcef);
+    free(sourcefinfo);
+    return -1;
+  }
+
+  stimframes = samplerate*(float)stimdur/1000.0;
+  offset = (int) rint((float)sourcefinfo->samplerate*(float)stimoffset/1000.0);
+  maxframes = (int)sourcefinfo->frames;
+  if(DEBUG==3){printf("offset  is %d msec, which is %d samples\n", stimoffset, (int) offset );}
+
+  if(stimdur>0)/* use the defined stimulus duration */
+    inframes = (int) rint((float)sourcefinfo->samplerate*(float)stimdur/1000.0);
+  else{
+    fprintf (stderr, "Invalid stimulus duration '%d'\n",stimdur);
+    sf_close(sourcef);
+    free(sourcefinfo);
+    return -1;
+  }
+  if(DEBUG==3){printf("stimdur  is %d msec, so I want %d samples after the offset\n", stimdur, (int) inframes );}
+  
+  /*now read the soundfile*/
+  obuff = (short *) malloc(sizeof(int)*inframes);
+  if(DEBUG==3){printf("trying to seek by %d samples; sf_seek returned %d \n", (int)offset, tmp);}
+  tmp = sf_seek(sourcef, offset, SEEK_SET);
+  if(DEBUG==3){printf("trying to sf_readf %d frames\n",(int)inframes);}
+  incount = sf_readf_short(sourcef, obuff, inframes);
+  if(DEBUG==3){printf("got %d samples when I tried for %d from sf_readf_short()\n",(int)incount, (int)inframes);}
+  
+  /* ramp the first (and last) 50 ms from zero to normal amplitude*/
+  ramp_dur= ramp_time * sfinfo->samplerate; //get number of samples for ramp
+  for (i = 0; i<ramp_dur; i++)
+    obuff[i] = obuff[i]*((float)i/(float)ramp_dur);
+  for (i = (incount-ramp_dur); i<=incount; i++) 
+    obuff[i] = obuff[i]* ((float)(incount-i)/(float)ramp_dur);
+  
+  outfinfo.frames = inframes;
+  
+  /*this works as long as the files have been verified*/
+  outfinfo.channels = sourcefinfo.channels;
+  outfinfo.samplerate = sourcefinfo.samplerate;
+  outfinfo.format = sourcefinfo.format;
+  if(DEBUG==3){fprintf(stderr,"output file format:%x \tchannels: %d \tsamplerate: %d\n",
+		       sfout_info.format, sfout_info.channels, sfout_info.samplerate);}
+  
+  /*write the ouput file*/ 
+  sprintf(outsfname,"%sdur_tmp_box%d.wav", STIMPATH, box_id);
+  if(!(sfout = sf_open(outsfname,SFM_WRITE,&outfinfo))){
+    fprintf(stderr,"error opening output file '%s'\n",outsfname);
+    sf_close(sourcef);
+    free(sourcefinfo);
+    free(obuff);
+    return -1;
+  }
+  
+  fcheck=sf_writef_short(sfout, obuff, outframes);
+  if(fcheck!=outframes){
+    fprintf(stderr,"UH OH!:I could only write %lu out of %lu frames!\n",
+	    (long unsigned int)fcheck, (long unsigned int)outframes);
+    return -1;
+  }
+  else
+    if(DEBUG==2){fprintf(stderr,"outframes: %lu \tfcheck: %lu \tduration: %g secs\n",
+			 (long unsigned int)outframes,(long unsigned int)fcheck,
+			 (double)outframes/sfout_info.samplerate);}
+  
+  /*close handles and free resources*/ 
+  sf_close(sourcef);
+  free(sourcefinfo);
+  sf_close(sfout);
+  free(outfinfo);
+  free(obuff);
+  
+  /*success*/
+  return 1;
+}

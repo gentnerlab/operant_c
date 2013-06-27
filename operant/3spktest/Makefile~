@@ -1,0 +1,2 @@
+all:
+	gcc -Wall 3spk.c -lsndfile -lasound -lcomedi -o 3spk

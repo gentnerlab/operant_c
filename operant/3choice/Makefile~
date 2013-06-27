@@ -1,0 +1,6 @@
+all:
+	gcc -Wall 3ac.c -lsndfile -lasound -lcomedi -o 3ac
+
+clean:
+	rm -rf *.o 3ac
+

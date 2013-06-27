@@ -1,0 +1,6 @@
+all:
+	gcc -Wall gngmot.c -lsndfile -lasound -lcomedi -o gngmot
+
+clean:
+	rm -rf *.o gngmot
+

@@ -1,0 +1,6 @@
+all:
+	gcc -Wall gng_dev.c -lsndfile -lasound -lcomedi -o gng_dev
+
+clean:
+	rm -rf *.o gng_dev
+

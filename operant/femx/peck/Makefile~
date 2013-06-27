@@ -1,0 +1,2 @@
+all:
+	gcc -Wall audout2.c -lsndfile -lasound -lcomedi -o audout2
