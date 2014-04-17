@@ -18,3 +18,5 @@
 
 # tilde backups
 *.*~
+# tilde makefiles
+*~

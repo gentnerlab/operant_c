@@ -1,0 +1,29 @@
+8743
+
+          SUMMARY DATA FOR st999, GNG
+	RESPONSE RATIOS (by stimulus)
+	Stim     		Session     		Totals
+	w100r23w95r11.wav     		0.0000     		0.0000
+	w100w100r22r33.wav     		1.0000     		1.0000
+	w100w86r28r52.wav     		1.0000     		1.0000
+	w101r28w82r26.wav     		0.6667     		0.6667
+	w102w75r31r10.wav     		1.0000     		1.0000
+	w105w91r32r52.wav     		nan     		nan
+	w108r20w97r12.wav     		nan     		nan
+
+
+ RESPONSE DATA (by stim class)
+               Today's Session               Totals
+Class 		 Count 	Response Ratio 		 Count 	Response Ratio
+Last trial: 4	1 		 3 	1.0000 		 3 	1.0000
+2 		 4 	0.5000 		 4 	0.5000
+Last trial run @: Tue Nov  2 09:12:37 2010
+
+Trials this session: 7
+Feeder ops today: 3
+Hopper failures today: 0
+Hopper won't go down failures today: 0
+Hopper already up failures today: 0
+Responses during feed: 0
+Rf'd responses: 5
+
